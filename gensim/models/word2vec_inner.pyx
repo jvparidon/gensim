@@ -472,6 +472,10 @@ cdef init_w2v_config(Word2VecConfig *c, model, alpha, compute_loss, _work, _neu1
     c[0].window = model.window
     c[0].workers = model.workers
 
+    c[0].targets = <np.uint32_t *>(np.PyArray_DATA(model.targets))
+    c[0].n_targets = int(len(model.targets) / 2)
+    c[0].target_int = model.target_int
+
     c[0].compute_loss = (1 if compute_loss else 0)
     c[0].running_training_loss = model.running_training_loss
 

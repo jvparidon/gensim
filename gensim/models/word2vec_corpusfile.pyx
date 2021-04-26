@@ -18,6 +18,8 @@ from gensim.utils import any2utf8
 
 cimport numpy as np
 
+from libc.stdio cimport printf
+from libc.math cimport sqrt
 from libcpp.string cimport string
 from libcpp.vector cimport vector
 from libcpp cimport bool as bool_t
@@ -29,8 +31,30 @@ from gensim.models.word2vec_inner cimport (
     w2v_fast_sentence_cbow_neg,
     random_int32,
     init_w2v_config,
-    Word2VecConfig
+    Word2VecConfig,
+    our_dot
 )
+
+
+cdef double cy_cosine(REAL_t *x, const int xi, REAL_t *y, const int yi, const int size) nogil:
+    cdef double xx = 0.0
+    cdef double yy = 0.0
+    cdef double xy = 0.0
+    cdef int i
+    for i in range(size):
+        xx+=x[xi + i] * x[xi + i]
+        yy+=y[yi + i] * y[yi + i]
+        xy+=x[xi + i] * y[yi + i]
+    return xy / sqrt(xx * yy)
+
+
+cdef double our_cos(int *N, REAL_t *X, int *incX, REAL_t *Y, int *incY) nogil:
+    cdef double xx, yy, xy
+    xx = our_dot(N, X, incX, X, incX)
+    yy = our_dot(N, Y, incY, Y, incY)
+    xy = our_dot(N, X, incX, Y, incY)
+    return xy / sqrt(xx * yy)
+
 
 DEF MAX_SENTENCE_LEN = 10000
 
@@ -290,11 +314,13 @@ def train_epoch_sg(model, corpus_file, offset, _cython_vocab, _cur_epoch, _expec
     cdef CythonLineSentence input_stream = CythonLineSentence(corpus_file, offset)
     cdef CythonVocab vocab = _cython_vocab
 
-    cdef int i, j, k
+    cdef int i, j, k, z
     cdef int effective_words = 0, effective_sentences = 0
     cdef long long total_sentences = 0
     cdef long long total_effective_words = 0, total_words = 0
+    cdef long long iter_idx
     cdef int sent_idx, idx_start, idx_end
+    cdef int one = 1
 
     init_w2v_config(&c, model, _alpha, compute_loss, _work)
 
@@ -312,6 +338,8 @@ def train_epoch_sg(model, corpus_file, offset, _cython_vocab, _cur_epoch, _expec
                 sentences, c.sample, c.hs, c.window, &total_words, &effective_words, &effective_sentences,
                 &c.next_random, vocab.get_vocab_ptr(), c.sentence_idx, c.indexes,
                 c.codelens, c.codes, c.points, c.reduced_windows)
+
+            #printf('%d + %d\n', effective_sentences, total_sentences)
 
             for sent_idx in range(effective_sentences):
                 idx_start = c.sentence_idx[sent_idx]
@@ -337,6 +365,22 @@ def train_epoch_sg(model, corpus_file, offset, _cython_vocab, _cur_epoch, _expec
                                 c.indexes[i], c.indexes[j], c.alpha, c.work, c.next_random,
                                 c.words_lockf, c.words_lockf_len,
                                 c.compute_loss, &c.running_training_loss)
+                iter_idx = (cur_epoch * expected_examples) + sent_idx + total_sentences
+                if iter_idx % c.target_int == 0:
+                    #printf('train another skipgram sentence\n')
+                    #printf('%d-%d: %f\n', c.indexes[i], c.indexes[j], cy_cosine(c.syn0, c.indexes[i], c.syn0, c.indexes[j], c.size))
+                    #printf('pairwise cosines:\n')
+
+                    printf('%d', cur_epoch)
+                    printf('\t%d', sent_idx + total_sentences)
+                    printf('\t%d', iter_idx)
+                    printf('\t%f', c.alpha)
+                    for z in range(c.n_targets):
+                        #printf('%d-%d: %f\n', c.targets[2 * z], c.targets[(2 * z) + 1], cy_cosine(c.syn0, c.indexes[c.targets[2 * z]], c.syn0, c.indexes[c.targets[(2 * z) + 1]], c.size))
+                        #printf('%d-%d: %f\n', c.targets[2 * z], c.targets[(2 * z) + 1], our_cos(&c.size, &c.syn0[c.targets[2 * z] * c.size], &one, &c.syn0[c.targets[(2 * z) + 1] * c.size], &one))
+                        #continue
+                        printf('\t%f', our_cos(&c.size, &c.syn0[c.targets[2 * z] * c.size], &one, &c.syn0[c.targets[(2 * z) + 1] * c.size], &one))
+                    printf('\n')
 
             total_sentences += sentences.size()
             total_effective_words += effective_words

@@ -241,6 +241,7 @@ class Word2Vec(utils.SaveLoad):
             sg=0, hs=0, negative=5, ns_exponent=0.75, cbow_mean=1, hashfxn=hash, epochs=5, null_word=0,
             trim_rule=None, sorted_vocab=1, batch_words=MAX_WORDS_IN_BATCH, compute_loss=False, callbacks=(),
             comment=None, max_final_vocab=None,
+            target_words=None, target_int=1,
         ):
         """Train, use and evaluate neural networks described in https://code.google.com/p/word2vec/.
 
@@ -345,6 +346,10 @@ class Word2Vec(utils.SaveLoad):
             :meth:`~gensim.models.word2vec.Word2Vec.get_latest_training_loss`.
         callbacks : iterable of :class:`~gensim.models.callbacks.CallbackAny2Vec`, optional
             Sequence of callbacks to be executed at specific stages during training.
+        target_words: list, optional
+            words for which cosine similarity is computed after each training sentence
+        target_int: int, optional
+            interval at which target word cosine similarities are computed (expressed in number of sentences)
 
         Examples
         --------
@@ -416,6 +421,11 @@ class Word2Vec(utils.SaveLoad):
         if corpus_iterable is not None or corpus_file is not None:
             self._check_corpus_sanity(corpus_iterable=corpus_iterable, corpus_file=corpus_file, passes=(epochs + 1))
             self.build_vocab(corpus_iterable=corpus_iterable, corpus_file=corpus_file, trim_rule=trim_rule)
+            self.target_int = target_int
+            self.target_pairs = list(itertools.combinations(target_words, 2))
+            self.targets = np.array([self.wv.key_to_index[target] for target in itertools.chain.from_iterable(self.target_pairs)], dtype=np.uint32)
+            self.target_pairs = [f'{pair[0]}-{pair[1]}' for pair in self.target_pairs]
+            print('\t'.join(['epoch', 'sentence', 'iteration', 'alpha'] + self.target_pairs), flush=True)
             self.train(
                 corpus_iterable=corpus_iterable, corpus_file=corpus_file, total_examples=self.corpus_count,
                 total_words=self.corpus_total_words, epochs=self.epochs, start_alpha=self.alpha,
