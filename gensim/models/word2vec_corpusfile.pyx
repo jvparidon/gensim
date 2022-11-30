@@ -12,17 +12,22 @@
 """Optimized cython functions for file-based training :class:`~gensim.models.word2vec.Word2Vec` model."""
 
 import cython
+from os import getpid
 import numpy as np
 
 from gensim.utils import any2utf8
 
 cimport numpy as np
 
-from libc.stdio cimport printf
+from libc.stdlib cimport free, malloc
+from libc.stdio cimport fprintf, printf, FILE, fopen, fclose
 from libc.math cimport sqrt
 from libcpp.string cimport string
 from libcpp.vector cimport vector
 from libcpp cimport bool as bool_t
+
+#include <stdio.h>
+#include <unistd.h>
 
 from gensim.models.word2vec_inner cimport (
     w2v_fast_sentence_sg_hs,
@@ -54,6 +59,11 @@ cdef double our_cos(int *N, REAL_t *X, int *incX, REAL_t *Y, int *incY) nogil:
     yy = our_dot(N, Y, incY, Y, incY)
     xy = our_dot(N, X, incX, Y, incY)
     return xy / sqrt(xx * yy)
+
+
+cdef void subtract(REAL_t *x, REAL_t *y, REAL_t *z, int size) nogil:
+    for i in range(size):
+        z[i] = y[i] - x[i]
 
 
 DEF MAX_SENTENCE_LEN = 10000
@@ -318,13 +328,32 @@ def train_epoch_sg(model, corpus_file, offset, _cython_vocab, _cur_epoch, _expec
     cdef int effective_words = 0, effective_sentences = 0
     cdef long long total_sentences = 0
     cdef long long total_effective_words = 0, total_words = 0
-    cdef long long iter_idx
-    cdef int sent_idx, idx_start, idx_end
+    cdef long long iter_idx = 0
+    cdef long long sent_idx = 0
+    cdef int idx_start, idx_end
     cdef int one = 1
+
+    #print('BEGIN TRAINING LOOP')
+
+    cdef REAL_t *diff
+    cdef np.uint32_t *targets
+    cdef int n_targets, target_int
+    #print('\n\n\n')
+    #print(model.wv.vector_size)
+    #print('HERE!!!\n\n\n')
+    #diff = <REAL_t *>(np.PyArray_DATA(np.zeros(model.wv.vector_size)))
+    diff = <REAL_t *>malloc(model.wv.vector_size * sizeof(REAL_t))
+    targets = <np.uint32_t *>(np.PyArray_DATA(model.targets))
+    n_targets = int(len(model.targets)) - 2  # because the first two targets are the dimension anchors (TODO: fix this later?)
+    target_int = model.target_int
 
     init_w2v_config(&c, model, _alpha, compute_loss, _work)
 
     cdef vector[vector[string]] sentences
+
+    # probe output file
+    cdef FILE *ptr_fout
+    ptr_fout = fopen(model.probe_fname, 'ab')
 
     with nogil:
         input_stream.reset()
@@ -366,30 +395,58 @@ def train_epoch_sg(model, corpus_file, offset, _cython_vocab, _cur_epoch, _expec
                                 c.words_lockf, c.words_lockf_len,
                                 c.compute_loss, &c.running_training_loss)
                 iter_idx = (cur_epoch * expected_examples) + sent_idx + total_sentences
-                if iter_idx % c.target_int == 0:
+                #printf('%s\n', 'MID TRAINING LOOP')
+                if iter_idx % target_int == 0:
                     #printf('train another skipgram sentence\n')
                     #printf('%d-%d: %f\n', c.indexes[i], c.indexes[j], cy_cosine(c.syn0, c.indexes[i], c.syn0, c.indexes[j], c.size))
                     #printf('pairwise cosines:\n')
+                    #printf('%s\n', 'MID TRAINING LOOP PT 2')
+                    fprintf(ptr_fout, '%d', cur_epoch)
+                    #printf('%d * %d = %d\n', cur_epoch, expected_examples, cur_epoch * expected_examples)
+                    #printf('%d\n', sent_idx)
+                    #printf('%d\n', total_sentences)
+                    fprintf(ptr_fout, '\t%d', sent_idx + total_sentences)
+                    fprintf(ptr_fout, '\t%d', iter_idx)
+                    fprintf(ptr_fout, '\t%f', c.alpha)
+                    
+                    subtract(&c.syn0[targets[0] * c.size], &c.syn0[targets[1] * c.size], &diff[0], c.size)
+                    #printf('\nembs: %f', c.syn0[targets[0] * c.size])
+                    #printf('\nembs: %f', c.syn0[targets[1] * c.size])
+                    #printf('\ndiff: %f', diff[0])
 
-                    printf('%d', cur_epoch)
-                    printf('\t%d', sent_idx + total_sentences)
-                    printf('\t%d', iter_idx)
-                    printf('\t%f', c.alpha)
-                    for z in range(c.n_targets):
-                        #printf('%d-%d: %f\n', c.targets[2 * z], c.targets[(2 * z) + 1], cy_cosine(c.syn0, c.indexes[c.targets[2 * z]], c.syn0, c.indexes[c.targets[(2 * z) + 1]], c.size))
-                        #printf('%d-%d: %f\n', c.targets[2 * z], c.targets[(2 * z) + 1], our_cos(&c.size, &c.syn0[c.targets[2 * z] * c.size], &one, &c.syn0[c.targets[(2 * z) + 1] * c.size], &one))
-                        #continue
-                        printf('\t%f', our_cos(&c.size, &c.syn0[c.targets[2 * z] * c.size], &one, &c.syn0[c.targets[(2 * z) + 1] * c.size], &one))
-                    printf('\n')
+                    #subtract(&c.syn0[targets[0] * c.size], &c.syn0[targets[1] * c.size], &diff[0], c.size)
+                    
+                    #printf('%f\n', diff[0])
+                    #printf('%f\n', diff[1])
+                    #printf('%f\n', diff[2])
+                    #printf('%f\n', diff[3])
+                    for z in range(n_targets):
+                        #fprintf(ptr_fout, '\t%f', our_cos(&c.size, &c.syn0[targets[2 * z] * c.size], &one, &c.syn0[targets[(2 * z) + 1] * c.size], &one))
+                        #fprintf(ptr_fout, '\t%f', our_cos(&c.size, &c.syn0[targets[0] * c.size], &one, &c.syn0[targets[z + 2] * c.size], &one))
+
+                        fprintf(ptr_fout, '\t%f', our_cos(&c.size, &diff[0], &one, &c.syn0[targets[z + 2] * c.size], &one))
+                        pass
+
+                    fprintf(ptr_fout, '\n')
 
             total_sentences += sentences.size()
             total_effective_words += effective_words
+
+            #printf('diff %p\n', &diff)
+            #printf('ptr_fout %p\n', &ptr_fout)
+            #printf('iter_idx %p\n', &iter_idx)
+            #printf('alpha %p\n', &c.alpha)
+
+            #printf('%s\n', 'END TRAINING LOOP PT 1')
 
             c.alpha = get_next_alpha(
                 start_alpha, end_alpha, total_sentences, total_words,
                 expected_examples, expected_words, cur_epoch, num_epochs)
 
+        #printf('%s\n', 'END TRAINING LOOP PT 2')
+    #print('AFTER TRAINING LOOP')
     model.running_training_loss = c.running_training_loss
+    fclose(ptr_fout)
     return total_sentences, total_effective_words, total_words
 
 

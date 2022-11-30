@@ -195,6 +195,7 @@ from queue import Queue, Empty
 
 from numpy import float32 as REAL
 import numpy as np
+import ctypes
 
 from gensim.utils import keep_vocab_item, call_on_class_only, deprecated
 from gensim.models.keyedvectors import KeyedVectors, pseudorandom_weak_vector
@@ -241,7 +242,7 @@ class Word2Vec(utils.SaveLoad):
             sg=0, hs=0, negative=5, ns_exponent=0.75, cbow_mean=1, hashfxn=hash, epochs=5, null_word=0,
             trim_rule=None, sorted_vocab=1, batch_words=MAX_WORDS_IN_BATCH, compute_loss=False, callbacks=(),
             comment=None, max_final_vocab=None,
-            target_words=None, target_int=1,
+            target_words=None, target_int=1, probe_fname=None
         ):
         """Train, use and evaluate neural networks described in https://code.google.com/p/word2vec/.
 
@@ -350,6 +351,8 @@ class Word2Vec(utils.SaveLoad):
             words for which cosine similarity is computed after each training sentence
         target_int: int, optional
             interval at which target word cosine similarities are computed (expressed in number of sentences)
+        probe_fname: str, optional
+            filename for storing word2vec embedding probe samples
 
         Examples
         --------
@@ -421,11 +424,18 @@ class Word2Vec(utils.SaveLoad):
         if corpus_iterable is not None or corpus_file is not None:
             self._check_corpus_sanity(corpus_iterable=corpus_iterable, corpus_file=corpus_file, passes=(epochs + 1))
             self.build_vocab(corpus_iterable=corpus_iterable, corpus_file=corpus_file, trim_rule=trim_rule)
+            self.probe_fname = probe_fname if (probe_fname.endswith('.tsv') or probe_fname.endswith('.txt')) else (probe_fname + '.tsv')
+            self.probe_fname = self.probe_fname.encode('ascii')
             self.target_int = target_int
-            self.target_pairs = list(itertools.combinations(target_words, 2))
-            self.targets = np.array([self.wv.key_to_index[target] for target in itertools.chain.from_iterable(self.target_pairs)], dtype=np.uint32)
-            self.target_pairs = [f'{pair[0]}-{pair[1]}' for pair in self.target_pairs]
-            print('\t'.join(['epoch', 'sentence', 'iteration', 'alpha'] + self.target_pairs), flush=True)
+            if True:
+                self.targets = np.array([self.wv.key_to_index[target] for target in target_words], dtype=np.uint32)
+                columns = target_words[2:]
+            else:
+                self.target_pairs = list(itertools.combinations(target_words, 2))
+                self.targets = np.array([self.wv.key_to_index[target] for target in itertools.chain.from_iterable(self.target_pairs)], dtype=np.uint32)
+                columns = [f'{pair[0]}-{pair[1]}' for pair in self.target_pairs]
+            with open(probe_fname, 'w') as fout:
+                fout.write('\t'.join(['epoch', 'sentence', 'iteration', 'alpha'] + columns) + '\n')
             self.train(
                 corpus_iterable=corpus_iterable, corpus_file=corpus_file, total_examples=self.corpus_count,
                 total_words=self.corpus_total_words, epochs=self.epochs, start_alpha=self.alpha,
